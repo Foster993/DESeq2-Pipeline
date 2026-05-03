@@ -1,0 +1,835 @@
+################################################################################
+# Arabidopsis Drought vs Salt — Comparative Analysis
+# 4 Venn Diagrams | Fisher's Exact Test | 5 Comparison Plot Types
+# Output: ~/Downloads/deseq2_arabidopsis/Comparative_Analysis/
+################################################################################
+
+# ==============================================================================
+# PART 1: SETUP
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 1: Setup\n")
+cat("========================================\n\n")
+
+# --- Packages ---
+cran_pkgs <- c("ggplot2", "ggvenn", "ggrepel", "pheatmap",
+               "gridExtra", "scales", "RColorBrewer")
+for (pkg in cran_pkgs) {
+  if (!pkg %in% rownames(installed.packages())) {
+    message("Installing from CRAN: ", pkg); install.packages(pkg)
+  } else { message("✅ ", pkg, " (CRAN)") }
+}
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+bioc_pkgs <- c("DESeq2", "AnnotationDbi", "org.At.tair.db", "GO.db")
+for (pkg in bioc_pkgs) {
+  if (!pkg %in% rownames(installed.packages())) {
+    message("Installing from Bioconductor: ", pkg); BiocManager::install(pkg)
+  } else { message("✅ ", pkg, " (Bioconductor)") }
+}
+
+library(ggplot2)
+library(ggvenn)
+library(ggrepel)
+library(pheatmap)
+library(gridExtra)
+library(scales)
+library(RColorBrewer)
+library(DESeq2)
+library(AnnotationDbi)
+library(org.At.tair.db)
+library(GO.db)
+
+cat("\n✅ All libraries loaded!\n\n")
+
+# --- Directories ---
+base_dir    <- "~/Downloads/deseq2_arabidopsis"
+drought_dir <- file.path(base_dir, "arabidopsis_drought")
+salt_dir    <- file.path(base_dir, "arabidopsis_salt")
+out_dir     <- file.path(base_dir, "Comparative_Analysis")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+cat("Output directory:", out_dir, "\n\n")
+
+# ==============================================================================
+# GLOBAL COLOR SCHEME
+# ==============================================================================
+
+COL_DROUGHT  <- "#cc4400"   # orange — drought
+COL_SALT     <- "#8B00CC"   # purple — salt
+COL_CONTROL  <- "#0088cc"   # blue   — control
+COL_DARK     <- "#1a1a2e"   # near-black
+COL_UP       <- "#cc4400"   # upregulated
+COL_DOWN     <- "#87cc00"   # downregulated
+COL_OVERLAP  <- "#ff6b6b"   # overlap / shared
+COL_GRAY1    <- "#666666"
+COL_GRAY2    <- "#cccccc"
+COL_PALE     <- "#f5f5f5"
+
+theme_compare <- function(base_size = 12) {
+  theme_bw(base_size = base_size) +
+    theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold",
+                                   size = base_size + 3, color = COL_DARK),
+      plot.subtitle = element_text(hjust = 0.5, size = base_size,
+                                   color = COL_GRAY1),
+      axis.title    = element_text(size = base_size + 1, color = COL_DARK),
+      axis.text     = element_text(size = base_size - 1, color = COL_GRAY1),
+      panel.border  = element_rect(color = COL_DARK, linewidth = 0.8),
+      legend.title  = element_text(size = base_size, color = COL_DARK),
+      legend.text   = element_text(size = base_size - 1, color = COL_GRAY1),
+      strip.background = element_rect(fill = COL_DARK),
+      strip.text    = element_text(color = "white", face = "bold",
+                                   size = base_size)
+    )
+}
+
+# ==============================================================================
+# PART 2: LOAD RESULTS
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 2: Loading Results\n")
+cat("========================================\n\n")
+
+drought_res <- readRDS(file.path(drought_dir, "deseq2_results.rds"))
+salt_res    <- readRDS(file.path(salt_dir,    "deseq2_results.rds"))
+drought_dds <- readRDS(file.path(drought_dir, "dds_object.rds"))
+salt_dds    <- readRDS(file.path(salt_dir,    "dds_object.rds"))
+drought_vsd <- readRDS(file.path(drought_dir, "vsd_object.rds"))
+salt_vsd    <- readRDS(file.path(salt_dir,    "vsd_object.rds"))
+
+cat("✅ Drought results loaded:", nrow(drought_res), "genes\n")
+cat("✅ Salt results loaded:   ", nrow(salt_res),    "genes\n\n")
+
+# --- Build data frames ---
+drought_df <- as.data.frame(drought_res)
+drought_df$gene      <- rownames(drought_df)
+drought_df$condition <- "Drought"
+
+salt_df <- as.data.frame(salt_res)
+salt_df$gene      <- rownames(salt_df)
+salt_df$condition <- "Salt"
+
+# --- Define gene sets (padj < 0.05, |log2FC| > 1) ---
+drought_up   <- rownames(subset(drought_df, padj < 0.05 & log2FoldChange >  1))
+drought_down <- rownames(subset(drought_df, padj < 0.05 & log2FoldChange < -1))
+salt_up      <- rownames(subset(salt_df,    padj < 0.05 & log2FoldChange >  1))
+salt_down    <- rownames(subset(salt_df,    padj < 0.05 & log2FoldChange < -1))
+
+cat("Drought UP:  ", length(drought_up),   "\n")
+cat("Drought DOWN:", length(drought_down), "\n")
+cat("Salt UP:     ", length(salt_up),      "\n")
+cat("Salt DOWN:   ", length(salt_down),    "\n\n")
+
+# ==============================================================================
+# PART 3: FOUR VENN DIAGRAMS
+# Venn 1: Down-Down   | Venn 2: Down-Up
+# Venn 3: Up-Down     | Venn 4: Up-Up
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 3: Venn Diagrams\n")
+cat("========================================\n\n")
+
+make_venn <- function(list_a, list_b,
+                      label_a, label_b,
+                      col_a, col_b,
+                      title_str, subtitle_str, filename) {
+  venn_list        <- list(list_a, list_b)
+  names(venn_list) <- c(label_a, label_b)
+  
+  overlap  <- intersect(list_a, list_b)
+  only_a   <- setdiff(list_a, list_b)
+  only_b   <- setdiff(list_b, list_a)
+  
+  cat(title_str, "\n")
+  cat("  Only", label_a, ":", length(only_a), "\n")
+  cat("  Only", label_b, ":", length(only_b), "\n")
+  cat("  Shared:", length(overlap), "\n\n")
+  
+  p <- ggvenn(venn_list,
+              fill_color   = c(col_a, col_b),
+              fill_alpha   = 0.45,
+              stroke_size  = 1.2,
+              set_name_size = 5,
+              text_size    = 5) +
+    labs(title    = title_str,
+         subtitle = subtitle_str) +
+    theme_void() +
+    theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold",
+                                   size = 16, color = COL_DARK,
+                                   margin = margin(b = 6)),
+      plot.subtitle = element_text(hjust = 0.5, size = 12,
+                                   color = COL_GRAY1,
+                                   margin = margin(b = 10)),
+      plot.background = element_rect(fill = "white", color = NA),
+      plot.margin     = margin(20, 20, 20, 20)
+    )
+  
+  ggsave(file.path(out_dir, filename), p, width = 8, height = 7, dpi = 300)
+  cat("✅", filename, "saved\n")
+  
+  return(list(overlap = overlap, only_a = only_a, only_b = only_b))
+}
+
+# Venn 1: Downregulated in BOTH (Down-Down)
+venn1 <- make_venn(
+  drought_down, salt_down,
+  "Drought DOWN", "Salt DOWN",
+  COL_DOWN, COL_DOWN,
+  "Venn 1: Downregulated in Both Stresses",
+  "Genes repressed by drought AND salt",
+  "Venn1_Down_Down.pdf"
+)
+
+# Venn 2: Drought DOWN, Salt UP (Down-Up)
+venn2 <- make_venn(
+  drought_down, salt_up,
+  "Drought DOWN", "Salt UP",
+  "#1a7abf", COL_SALT,
+  "Venn 2: Drought DOWN vs Salt UP",
+  "Genes repressed by drought but induced by salt",
+  "Venn2_Down_Up.pdf"
+)
+
+# Venn 3: Drought UP, Salt DOWN (Up-Down)
+venn3 <- make_venn(
+  drought_up, salt_down,
+  "Drought UP", "Salt DOWN",
+  COL_DROUGHT, "#1a7abf",
+  "Venn 3: Drought UP vs Salt DOWN",
+  "Genes induced by drought but repressed by salt",
+  "Venn3_Up_Down.pdf"
+)
+
+# Venn 4: Upregulated in BOTH (Up-Up)
+venn4 <- make_venn(
+  drought_up, salt_up,
+  "Drought UP", "Salt UP",
+  COL_DROUGHT, COL_SALT,
+  "Venn 4: Upregulated in Both Stresses",
+  "Genes induced by drought AND salt",
+  "Venn4_Up_Up.pdf"
+)
+
+# Save overlapping gene lists as CSVs
+write.csv(data.frame(gene = venn1$overlap), file.path(out_dir, "genes_down_down.csv"), row.names = FALSE)
+write.csv(data.frame(gene = venn2$overlap), file.path(out_dir, "genes_down_up.csv"),   row.names = FALSE)
+write.csv(data.frame(gene = venn3$overlap), file.path(out_dir, "genes_up_down.csv"),   row.names = FALSE)
+write.csv(data.frame(gene = venn4$overlap), file.path(out_dir, "genes_up_up.csv"),     row.names = FALSE)
+cat("\n✅ All 4 Venn diagrams + gene lists saved\n\n")
+
+# ==============================================================================
+# PART 4: FISHER'S EXACT TESTS
+# Test whether overlaps are statistically significant
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 4: Fisher's Exact Tests\n")
+cat("========================================\n\n")
+
+# Universe = all genes tested in BOTH experiments
+universe <- intersect(rownames(drought_df[!is.na(drought_df$padj), ]),
+                      rownames(salt_df[!is.na(salt_df$padj), ]))
+N <- length(universe)
+cat("Universe (genes tested in both):", N, "\n\n")
+
+run_fisher <- function(set_a, set_b, label) {
+  # 2x2 contingency table
+  # Both sig | Only A | Only B | Neither
+  in_a    <- intersect(set_a, universe)
+  in_b    <- intersect(set_b, universe)
+  both    <- length(intersect(in_a, in_b))
+  only_a  <- length(in_a) - both
+  only_b  <- length(in_b) - both
+  neither <- N - both - only_a - only_b
+  
+  mat <- matrix(c(both, only_a, only_b, neither), nrow = 2,
+                dimnames = list(c("In_A", "Not_A"), c("In_B", "Not_B")))
+  
+  ft  <- fisher.test(mat, alternative = "greater")
+  cat(label, "\n")
+  cat("  Both:    ", both, "| Only A:", only_a,
+      "| Only B:", only_b, "| Neither:", neither, "\n")
+  cat("  Odds Ratio:", round(ft$estimate, 3),
+      "| p-value:", format(ft$p.value, scientific = TRUE, digits = 3), "\n\n")
+  
+  data.frame(
+    Comparison  = label,
+    N_universe  = N,
+    N_set_A     = length(in_a),
+    N_set_B     = length(in_b),
+    N_overlap   = both,
+    Odds_Ratio  = round(ft$estimate, 4),
+    pvalue      = ft$p.value,
+    CI_low      = ft$conf.int[1],
+    CI_high     = ft$conf.int[2],
+    Significant = ifelse(ft$p.value < 0.05, "YES", "NO"),
+    stringsAsFactors = FALSE
+  )
+}
+
+fisher_results <- rbind(
+  run_fisher(drought_down, salt_down, "Down-Down (both repressed)"),
+  run_fisher(drought_down, salt_up,   "Down-Up (drought↓ salt↑)"),
+  run_fisher(drought_up,   salt_down, "Up-Down (drought↑ salt↓)"),
+  run_fisher(drought_up,   salt_up,   "Up-Up (both induced)")
+)
+
+fisher_results$padj_BH <- p.adjust(fisher_results$pvalue, method = "BH")
+fisher_results$neg_log10_p <- -log10(fisher_results$pvalue)
+
+write.csv(fisher_results,
+          file.path(out_dir, "Fishers_exact_test_results.csv"),
+          row.names = FALSE)
+cat("✅ Fisher's exact results saved to Fishers_exact_test_results.csv\n\n")
+
+# --- Fisher's Forest Plot ---
+fisher_plot_df <- fisher_results
+fisher_plot_df$Comparison <- factor(fisher_plot_df$Comparison,
+                                    levels = rev(fisher_plot_df$Comparison))
+fisher_plot_df$label_sig  <- ifelse(fisher_plot_df$padj_BH < 0.001, "***",
+                                    ifelse(fisher_plot_df$padj_BH < 0.01,  "**",
+                                           ifelse(fisher_plot_df$padj_BH < 0.05,  "*", "ns")))
+
+pdf(file.path(out_dir, "Fisher_forest_plot.pdf"), width = 10, height = 6)
+ggplot(fisher_plot_df,
+       aes(x = log2(Odds_Ratio), y = Comparison, color = Significant)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = COL_GRAY1, linewidth = 0.8) +
+  geom_errorbarh(aes(xmin = log2(CI_low + 0.001), xmax = log2(CI_high)),
+                 height = 0.2, linewidth = 0.8) +
+  geom_point(size = 5) +
+  geom_text(aes(label = label_sig),
+            hjust = -0.5, vjust = 0.3, size = 6, color = COL_DARK) +
+  scale_color_manual(values = c("YES" = COL_OVERLAP, "NO" = COL_GRAY2),
+                     name = "Significant\n(p < 0.05)") +
+  labs(title    = "Fisher's Exact Test: Overlap Significance",
+       subtitle = "Drought vs Salt — All four directional comparisons",
+       x = "log2(Odds Ratio)",
+       y = "") +
+  theme_compare()
+dev.off()
+cat("✅ Fisher_forest_plot.pdf saved\n\n")
+
+# ==============================================================================
+# PART 5: SCATTERPLOT — log2 fold changes
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 5: log2FC Scatterplot\n")
+cat("========================================\n\n")
+
+# Merge on shared genes
+shared_genes  <- intersect(rownames(drought_df), rownames(salt_df))
+scatter_df    <- data.frame(
+  gene          = shared_genes,
+  drought_lfc   = drought_df[shared_genes, "log2FoldChange"],
+  salt_lfc      = salt_df[shared_genes,    "log2FoldChange"],
+  drought_padj  = drought_df[shared_genes, "padj"],
+  salt_padj     = salt_df[shared_genes,    "padj"],
+  stringsAsFactors = FALSE
+)
+scatter_df <- scatter_df[!is.na(scatter_df$drought_lfc) &
+                           !is.na(scatter_df$salt_lfc), ]
+
+# Assign category
+scatter_df$category <- "Not Significant"
+scatter_df$category[scatter_df$drought_padj < 0.05 & abs(scatter_df$drought_lfc) > 1 &
+                      !(scatter_df$salt_padj < 0.05 & abs(scatter_df$salt_lfc) > 1)] <- "Drought Only"
+scatter_df$category[scatter_df$salt_padj < 0.05 & abs(scatter_df$salt_lfc) > 1 &
+                      !(scatter_df$drought_padj < 0.05 & abs(scatter_df$drought_lfc) > 1)] <- "Salt Only"
+scatter_df$category[scatter_df$drought_padj < 0.05 & abs(scatter_df$drought_lfc) > 1 &
+                      scatter_df$salt_padj < 0.05   & abs(scatter_df$salt_lfc) > 1] <- "Shared"
+
+cat("Category counts:\n"); print(table(scatter_df$category)); cat("\n")
+
+# Top shared genes to label
+shared_sig   <- scatter_df[scatter_df$category == "Shared", ]
+shared_sig$dist <- abs(shared_sig$drought_lfc) + abs(shared_sig$salt_lfc)
+top_label    <- head(shared_sig[order(-shared_sig$dist), "gene"], 20)
+
+scatter_df$label <- ifelse(scatter_df$gene %in% top_label, scatter_df$gene, "")
+
+cat_colors <- c("Not Significant" = COL_GRAY2,
+                "Drought Only"   = COL_DROUGHT,
+                "Salt Only"      = COL_SALT,
+                "Shared"         = COL_OVERLAP)
+
+pdf(file.path(out_dir, "Scatter_log2FC_drought_vs_salt.pdf"), width = 10, height = 9)
+ggplot(scatter_df[order(scatter_df$category == "Not Significant", decreasing = TRUE), ],
+       aes(x = drought_lfc, y = salt_lfc, color = category)) +
+  geom_point(alpha = 0.5, size = 1.2) +
+  geom_text_repel(data = scatter_df[scatter_df$label != "", ],
+                  aes(label = label), size = 3, color = COL_DARK,
+                  max.overlaps = 25, box.padding = 0.4,
+                  segment.color = COL_GRAY1, segment.size = 0.3) +
+  scale_color_manual(values = cat_colors, name = "Category") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = COL_GRAY1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = COL_GRAY1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dotted",
+              color = COL_DARK, linewidth = 0.5) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,
+           label = paste0("r = ", round(cor(scatter_df$drought_lfc,
+                                            scatter_df$salt_lfc,
+                                            use = "complete.obs"), 3)),
+           size = 5, color = COL_DARK, fontface = "bold") +
+  labs(title    = "log2 Fold Change: Drought vs Salt",
+       subtitle = paste0("Shared DEGs labeled (n=", length(top_label), " top genes shown)"),
+       x = "log2 Fold Change (Drought vs Control)",
+       y = "log2 Fold Change (Salt vs Control)") +
+  theme_compare() +
+  guides(color = guide_legend(override.aes = list(size = 4, alpha = 1)))
+dev.off()
+cat("✅ Scatter_log2FC_drought_vs_salt.pdf saved\n\n")
+
+# ==============================================================================
+# PART 6: SIDE-BY-SIDE VOLCANO PLOTS
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 6: Side-by-Side Volcano Plots\n")
+cat("========================================\n\n")
+
+make_volcano_df <- function(df, condition_name, stress_color) {
+  df2 <- df[!is.na(df$padj), ]
+  df2$status <- "Not Significant"
+  df2$status[df2$padj < 0.05 & df2$log2FoldChange >  1] <- "Upregulated"
+  df2$status[df2$padj < 0.05 & df2$log2FoldChange < -1] <- "Downregulated"
+  df2$condition <- condition_name
+  df2
+}
+
+drought_vol <- make_volcano_df(drought_df, "Drought", COL_DROUGHT)
+salt_vol    <- make_volcano_df(salt_df,    "Salt",    COL_SALT)
+both_vol    <- rbind(drought_vol, salt_vol)
+both_vol$condition <- factor(both_vol$condition, levels = c("Drought", "Salt"))
+
+# Status colors per condition: upregulated uses stress color, down uses green
+status_colors <- c("Not Significant" = COL_GRAY2,
+                   "Upregulated"     = COL_UP,
+                   "Downregulated"   = COL_DOWN)
+
+# Annotation counts per panel
+count_annot <- data.frame(
+  condition = factor(c("Drought", "Drought", "Salt", "Salt"),
+                     levels = c("Drought", "Salt")),
+  status    = c("Upregulated", "Downregulated", "Upregulated", "Downregulated"),
+  n         = c(length(drought_up), length(drought_down),
+                length(salt_up),    length(salt_down)),
+  x         = c(8, -8, 8, -8),
+  y         = c(18, 18, 18, 18)
+)
+
+pdf(file.path(out_dir, "Volcano_side_by_side.pdf"), width = 16, height = 8)
+ggplot(both_vol, aes(x = log2FoldChange, y = -log10(padj), color = status)) +
+  geom_point(alpha = 0.5, size = 1.2) +
+  scale_color_manual(values = status_colors, name = "Status") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed",
+             color = COL_DARK, linewidth = 0.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+             color = COL_DARK, linewidth = 0.5) +
+  geom_text(data = count_annot,
+            aes(x = x, y = y, label = paste0("n=", n), color = status),
+            size = 4.5, fontface = "bold", inherit.aes = FALSE) +
+  scale_color_manual(values = c(status_colors,
+                                "Upregulated"   = COL_UP,
+                                "Downregulated" = COL_DOWN),
+                     name = "Status") +
+  facet_wrap(~ condition, ncol = 2) +
+  coord_cartesian(xlim = c(-12, 12), ylim = c(0, 20)) +
+  labs(title    = "Volcano Plots: Drought vs Salt Stress",
+       subtitle = "padj < 0.05 | |log2FC| > 1",
+       x = "log2 Fold Change", y = "-log10(Adjusted P-value)") +
+  theme_compare() +
+  guides(color = guide_legend(override.aes = list(size = 4, alpha = 1)))
+dev.off()
+cat("✅ Volcano_side_by_side.pdf saved\n\n")
+
+# ==============================================================================
+# PART 7: COMBINED EXPRESSION HEATMAP
+# Shared DEGs across both conditions
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 7: Combined Expression Heatmap\n")
+cat("========================================\n\n")
+
+# Use all four overlap sets
+shared_all <- unique(c(venn1$overlap, venn2$overlap,
+                       venn3$overlap, venn4$overlap))
+cat("Total shared DEGs across all comparisons:", length(shared_all), "\n")
+
+if (length(shared_all) >= 5) {
+  
+  # Subset VSDs to shared genes
+  drought_mat <- assay(drought_vsd)[shared_all[shared_all %in%
+                                                 rownames(assay(drought_vsd))], ]
+  salt_mat    <- assay(salt_vsd)[shared_all[shared_all %in%
+                                              rownames(assay(salt_vsd))], ]
+  
+  # Keep only genes present in both
+  common_rows <- intersect(rownames(drought_mat), rownames(salt_mat))
+  drought_mat <- drought_mat[common_rows, ]
+  salt_mat    <- salt_mat[common_rows, ]
+  
+  # Rename columns to distinguish experiments
+  colnames(drought_mat) <- paste0("D_", colnames(drought_mat))
+  colnames(salt_mat)    <- paste0("S_", colnames(salt_mat))
+  
+  combined_mat <- cbind(drought_mat, salt_mat)
+  combined_scaled <- t(scale(t(combined_mat)))
+  
+  # Annotation
+  col_annot <- data.frame(
+    Experiment = c(rep("Drought", ncol(drought_mat)),
+                   rep("Salt",    ncol(salt_mat))),
+    Condition  = c(rep(c("control","control","control","control",
+                         "drought","drought","drought","drought"),
+                       length.out = ncol(drought_mat)),
+                   rep(c("control","control","control",
+                         "salt","salt","salt"),
+                       length.out = ncol(salt_mat))),
+    row.names = colnames(combined_mat)
+  )
+  
+  row_annot <- data.frame(
+    Direction = ifelse(common_rows %in% venn4$overlap, "Both UP",
+                       ifelse(common_rows %in% venn1$overlap, "Both DOWN",
+                              ifelse(common_rows %in% venn3$overlap, "D_up S_down", "D_down S_up"))),
+    row.names = common_rows
+  )
+  
+  annot_colors_hm <- list(
+    Experiment = c("Drought" = COL_DROUGHT, "Salt" = COL_SALT),
+    Direction  = c("Both UP"    = COL_OVERLAP,
+                   "Both DOWN"  = COL_DOWN,
+                   "D_up S_down" = COL_DROUGHT,
+                   "D_down S_up" = COL_SALT)
+  )
+  
+  ph <- min(max(10, length(common_rows) * 0.12), 60)
+  show_rows_hm <- length(common_rows) <= 80
+  
+  pdf(file.path(out_dir, "Combined_heatmap_shared_DEGs.pdf"),
+      width = 14, height = ph)
+  pheatmap(combined_scaled,
+           cluster_rows      = TRUE,
+           cluster_cols      = FALSE,
+           show_rownames     = show_rows_hm,
+           show_colnames     = TRUE,
+           annotation_col    = col_annot,
+           annotation_row    = row_annot,
+           annotation_colors = annot_colors_hm,
+           color  = colorRampPalette(c(COL_CONTROL, "#eeeeee", COL_OVERLAP))(100),
+           main   = paste0("Shared DEGs — Combined Heatmap\n(",
+                           length(common_rows), " genes across both stresses)"),
+           gaps_col       = ncol(drought_mat),
+           fontsize        = 9,
+           fontsize_row    = 7,
+           border_color    = NA,
+           cutree_rows     = 4,
+           treeheight_row  = 40,
+           treeheight_col  = 20)
+  dev.off()
+  cat("✅ Combined_heatmap_shared_DEGs.pdf saved (", length(common_rows), "genes)\n\n")
+  
+} else {
+  cat("⚠️  Too few shared genes (<5) for combined heatmap — skipping\n\n")
+}
+
+# ==============================================================================
+# PART 8: GO ENRICHMENT COMPARISON — 2x2 DOTPLOT GRID
+# Up-Up and Down-Down overlapping gene sets
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 8: GO Enrichment Comparison Grid\n")
+cat("========================================\n\n")
+
+get_go_BP_comparison <- function(gene_list, label) {
+  if (length(gene_list) < 3) {
+    cat("⚠️  Too few genes for GO in", label, "\n"); return(NULL)
+  }
+  tryCatch({
+    go_data <- AnnotationDbi::select(
+      org.At.tair.db,
+      keys    = as.character(gene_list),
+      columns = c("GO", "ONTOLOGY"),
+      keytype = "TAIR")
+    go_data <- go_data[!is.na(go_data$GO) & go_data$ONTOLOGY == "BP", ]
+    if (nrow(go_data) == 0) { cat("⚠️  No BP terms for", label, "\n"); return(NULL) }
+    
+    go_counts           <- as.data.frame(table(go_data$GO))
+    colnames(go_counts) <- c("GO_ID", "Gene_Count")
+    
+    go_terms <- AnnotationDbi::select(GO.db, keys = as.character(go_counts$GO_ID),
+                                      columns = "TERM", keytype = "GOID")
+    go_counts <- merge(go_counts, go_terms, by.x = "GO_ID", by.y = "GOID", all.x = TRUE)
+    go_counts$TERM[is.na(go_counts$TERM)] <- "Unknown BP term"
+    
+    go_counts$pvalue   <- sapply(seq_len(nrow(go_counts)), function(i) {
+      phyper(go_counts$Gene_Count[i] - 1,
+             length(gene_list), N - length(gene_list),
+             length(gene_list), lower.tail = FALSE)
+    })
+    go_counts$padj_BH   <- p.adjust(go_counts$pvalue, method = "BH")
+    go_counts$log10padj <- -log10(go_counts$padj_BH + 1e-300)
+    go_counts$GeneRatio <- go_counts$Gene_Count / length(gene_list)
+    go_counts$Set       <- label
+    go_counts <- go_counts[order(go_counts$padj_BH), ]
+    cat("✅ GO BP for", label, "—", nrow(head(go_counts, 15)), "terms\n")
+    head(go_counts, 15)
+  }, error = function(e) {
+    cat("❌ GO error for", label, ":", e$message, "\n"); NULL
+  })
+}
+
+go_up_up     <- get_go_BP_comparison(venn4$overlap, "Both Upregulated")
+go_down_down <- get_go_BP_comparison(venn1$overlap, "Both Downregulated")
+go_d_up_only <- get_go_BP_comparison(setdiff(drought_up, salt_up),   "Drought Only UP")
+go_s_up_only <- get_go_BP_comparison(setdiff(salt_up, drought_up),   "Salt Only UP")
+
+go_sets <- list(go_up_up, go_down_down, go_d_up_only, go_s_up_only)
+go_sets <- go_sets[!sapply(go_sets, is.null)]
+
+if (length(go_sets) >= 2) {
+  go_combined <- do.call(rbind, go_sets)
+  
+  # Shorten long term names
+  go_combined$TERM_short <- ifelse(nchar(go_combined$TERM) > 45,
+                                   paste0(substr(go_combined$TERM, 1, 42), "..."),
+                                   go_combined$TERM)
+  go_combined$Set <- factor(go_combined$Set,
+                            levels = c("Both Upregulated", "Both Downregulated",
+                                       "Drought Only UP",  "Salt Only UP"))
+  
+  pdf(file.path(out_dir, "GO_comparison_grid_dotplot.pdf"), width = 18, height = 12)
+  print(
+    ggplot(go_combined,
+           aes(x = GeneRatio, y = reorder(TERM_short, GeneRatio),
+               size = Gene_Count, color = log10padj)) +
+      geom_point(alpha = 0.85) +
+      scale_color_gradient(low = "#91CCE9", high = COL_DARK,
+                           name = "-log10(BH padj)") +
+      scale_size_continuous(range = c(2, 10), name = "Gene Count") +
+      facet_wrap(~ Set, scales = "free_y", ncol = 2) +
+      labs(title    = "GO Enrichment Comparison: Drought vs Salt",
+           subtitle = "Biological Process | BH correction | Top 15 terms per set",
+           x = "Gene Ratio", y = "GO Term (BP)") +
+      theme_compare(base_size = 10) +
+      theme(axis.text.y = element_text(size = 8),
+            panel.spacing = unit(1.2, "lines"))
+  )
+  dev.off()
+  cat("✅ GO_comparison_grid_dotplot.pdf saved\n\n")
+  
+  write.csv(go_combined, file.path(out_dir, "GO_comparison_all_sets.csv"),
+            row.names = FALSE)
+  
+} else {
+  cat("⚠️  Not enough GO sets to build grid — skipping\n\n")
+}
+
+# ==============================================================================
+# PART 9: BAR CHARTS — DEG count comparison
+# ==============================================================================
+
+cat("========================================\n")
+cat("PART 9: DEG Count Bar Charts\n")
+cat("========================================\n\n")
+
+# --- Bar Chart 1: Total UP/DOWN per stress ---
+deg_summary <- data.frame(
+  Stress    = rep(c("Drought", "Salt"), each = 2),
+  Direction = rep(c("Upregulated", "Downregulated"), 2),
+  Count     = c(length(drought_up),   length(drought_down),
+                length(salt_up),      length(salt_down))
+)
+deg_summary$Count_signed <- ifelse(deg_summary$Direction == "Downregulated",
+                                   -deg_summary$Count, deg_summary$Count)
+deg_summary$Stress <- factor(deg_summary$Stress, levels = c("Drought", "Salt"))
+
+stress_colors_bar <- c("Drought" = COL_DROUGHT, "Salt" = COL_SALT)
+
+pdf(file.path(out_dir, "Barchart_DEG_counts.pdf"), width = 9, height = 7)
+ggplot(deg_summary, aes(x = Stress, y = Count_signed, fill = Stress, alpha = Direction)) +
+  geom_bar(stat = "identity", position = "identity", width = 0.5,
+           color = COL_DARK, linewidth = 0.4) +
+  geom_hline(yintercept = 0, color = COL_DARK, linewidth = 0.8) +
+  geom_text(aes(label = Count,
+                y = ifelse(Count_signed > 0,
+                           Count_signed + 30, Count_signed - 30)),
+            size = 5, fontface = "bold", color = COL_DARK) +
+  scale_fill_manual(values = stress_colors_bar) +
+  scale_alpha_manual(values = c("Upregulated" = 1, "Downregulated" = 0.6),
+                     name = "Direction") +
+  scale_y_continuous(labels = function(x) abs(x),
+                     name = "Number of DEGs") +
+  annotate("text", x = 0.55, y = max(deg_summary$Count) * 0.7,
+           label = "▲ Upregulated", size = 4, color = COL_DARK) +
+  annotate("text", x = 0.55, y = -max(deg_summary$Count) * 0.7,
+           label = "▼ Downregulated", size = 4, color = COL_DARK) +
+  labs(title    = "DEG Counts: Drought vs Salt",
+       subtitle = "padj < 0.05 | |log2FC| > 1",
+       x = "", fill = "Stress") +
+  theme_compare() +
+  theme(legend.position = "right")
+dev.off()
+cat("✅ Barchart_DEG_counts.pdf saved\n")
+
+# --- Bar Chart 2: Overlap breakdown ---
+overlap_summary <- data.frame(
+  Category = c("Both UP", "Both DOWN",
+               "Drought UP\nSalt DOWN", "Drought DOWN\nSalt UP",
+               "Drought Only UP", "Salt Only UP",
+               "Drought Only DOWN", "Salt Only DOWN"),
+  Count    = c(length(venn4$overlap), length(venn1$overlap),
+               length(venn3$overlap), length(venn2$overlap),
+               length(venn3$only_a),  length(venn3$only_b),
+               length(venn1$only_a),  length(venn1$only_b)),
+  Type     = c("Shared", "Shared", "Discordant", "Discordant",
+               "Unique", "Unique", "Unique", "Unique")
+)
+overlap_summary$Category <- factor(overlap_summary$Category,
+                                   levels = overlap_summary$Category)
+
+type_colors <- c("Shared" = COL_OVERLAP, "Discordant" = COL_SALT,
+                 "Unique" = COL_GRAY1)
+
+pdf(file.path(out_dir, "Barchart_overlap_breakdown.pdf"), width = 12, height = 7)
+ggplot(overlap_summary, aes(x = Category, y = Count, fill = Type)) +
+  geom_bar(stat = "identity", width = 0.65,
+           color = COL_DARK, linewidth = 0.4) +
+  geom_text(aes(label = Count), vjust = -0.4, size = 4.5,
+            fontface = "bold", color = COL_DARK) +
+  scale_fill_manual(values = type_colors, name = "Category type") +
+  labs(title    = "DEG Overlap Breakdown: Drought vs Salt",
+       subtitle = "Shared, discordant, and condition-specific gene sets",
+       x = "", y = "Number of Genes") +
+  theme_compare() +
+  theme(axis.text.x = element_text(size = 9, angle = 15, hjust = 1))
+dev.off()
+cat("✅ Barchart_overlap_breakdown.pdf saved\n")
+
+# --- Bar Chart 3: Proportion bar (stacked) ---
+prop_df <- data.frame(
+  Stress    = c("Drought","Drought","Drought",
+                "Salt","Salt","Salt"),
+  Category  = c("Only Drought","Shared UP","Only Salt",
+                "Only Salt","Shared UP","Only Drought"),
+  Direction = c("UP","UP","UP",
+                "UP","UP","UP"),
+  Count = c(length(venn3$only_a), length(venn4$overlap), length(venn3$only_b),
+            length(venn3$only_b), length(venn4$overlap), length(venn3$only_a))
+)
+
+# Simpler stacked for up and down combined
+stack_df <- data.frame(
+  Stress    = c(rep("Drought", 3), rep("Salt", 3)),
+  Category  = rep(c("Shared (both)", "Stress-specific", "Discordant"), 2),
+  Count     = c(
+    length(venn4$overlap) + length(venn1$overlap),
+    length(setdiff(drought_up, salt_up)) + length(setdiff(drought_down, salt_down)),
+    length(venn2$overlap) + length(venn3$overlap),
+    length(venn4$overlap) + length(venn1$overlap),
+    length(setdiff(salt_up, drought_up)) + length(setdiff(salt_down, drought_down)),
+    length(venn2$overlap) + length(venn3$overlap)
+  )
+)
+stack_df$Category <- factor(stack_df$Category,
+                            levels = c("Discordant","Stress-specific","Shared (both)"))
+stack_df$Stress   <- factor(stack_df$Stress, levels = c("Drought","Salt"))
+
+stack_colors <- c("Shared (both)"   = COL_OVERLAP,
+                  "Stress-specific" = COL_GRAY1,
+                  "Discordant"      = "#4444cc")
+
+pdf(file.path(out_dir, "Barchart_proportions_stacked.pdf"), width = 8, height = 7)
+ggplot(stack_df, aes(x = Stress, y = Count, fill = Category)) +
+  geom_bar(stat = "identity", width = 0.5,
+           color = COL_DARK, linewidth = 0.4) +
+  geom_text(aes(label = Count), position = position_stack(vjust = 0.5),
+            size = 4.5, fontface = "bold", color = "white") +
+  scale_fill_manual(values = stack_colors, name = "") +
+  labs(title    = "DEG Composition: Drought vs Salt",
+       subtitle = "Shared, stress-specific, and discordant genes",
+       x = "", y = "Number of DEGs") +
+  theme_compare() +
+  theme(legend.position = "bottom")
+dev.off()
+cat("✅ Barchart_proportions_stacked.pdf saved\n\n")
+
+# ==============================================================================
+# FINAL VERIFICATION
+# ==============================================================================
+
+cat("========================================\n")
+cat("FINAL VERIFICATION\n")
+cat("========================================\n\n")
+
+expected_files <- c(
+  "Venn1_Down_Down.pdf",
+  "Venn2_Down_Up.pdf",
+  "Venn3_Up_Down.pdf",
+  "Venn4_Up_Up.pdf",
+  "genes_down_down.csv",
+  "genes_down_up.csv",
+  "genes_up_down.csv",
+  "genes_up_up.csv",
+  "Fishers_exact_test_results.csv",
+  "Fisher_forest_plot.pdf",
+  "Scatter_log2FC_drought_vs_salt.pdf",
+  "Volcano_side_by_side.pdf",
+  "Combined_heatmap_shared_DEGs.pdf",
+  "GO_comparison_grid_dotplot.pdf",
+  "GO_comparison_all_sets.csv",
+  "Barchart_DEG_counts.pdf",
+  "Barchart_overlap_breakdown.pdf",
+  "Barchart_proportions_stacked.pdf"
+)
+
+all_ok <- TRUE
+for (f in expected_files) {
+  fp <- file.path(out_dir, f)
+  if (file.exists(fp) && file.info(fp)$size > 500) {
+    cat("✅", formatC(f, width = 45, flag = "-"),
+        round(file.info(fp)$size / 1024, 1), "KB\n")
+  } else if (file.exists(fp)) {
+    cat("⚠️ ", f, "— small file, may be empty\n"); all_ok <- FALSE
+  } else {
+    cat("❌ MISSING:", f, "\n"); all_ok <- FALSE
+  }
+}
+
+cat("\n")
+if (all_ok) {
+  cat("🎉 ALL FILES VERIFIED!\n\n")
+} else {
+  cat("❌ Some files missing — check warnings above\n\n")
+}
+
+cat("========================================\n")
+cat("COMPARATIVE ANALYSIS COMPLETE\n")
+cat("========================================\n\n")
+cat("Output folder:", out_dir, "\n\n")
+cat("SUMMARY:\n")
+cat("  Drought UP:  ", length(drought_up),        "\n")
+cat("  Drought DOWN:", length(drought_down),       "\n")
+cat("  Salt UP:     ", length(salt_up),            "\n")
+cat("  Salt DOWN:   ", length(salt_down),          "\n\n")
+cat("  Shared UP-UP:     ", length(venn4$overlap), "\n")
+cat("  Shared DOWN-DOWN: ", length(venn1$overlap), "\n")
+cat("  Drought↓ Salt↑:  ", length(venn2$overlap), "\n")
+cat("  Drought↑ Salt↓:  ", length(venn3$overlap), "\n\n")
+cat("Fisher's Exact — significant overlaps:\n")
+for (i in seq_len(nrow(fisher_results))) {
+  cat("  ", fisher_results$Comparison[i], "→",
+      fisher_results$Significant[i],
+      "(OR =", round(fisher_results$Odds_Ratio[i], 2),
+      ", p =", format(fisher_results$pvalue[i], scientific = TRUE, digits = 2), ")\n")
+}

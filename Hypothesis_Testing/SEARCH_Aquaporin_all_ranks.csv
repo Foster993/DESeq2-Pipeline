@@ -1,0 +1,5 @@
+"GO_ID","TERM","Gene_Count","K_total","GeneRatio","pvalue","padj_BH","rank","label","family"
+"GO:0006833","water transport",1,24,5e-04,0.887725010436255,0.999999986454574,566,"salt_UP","Aquaporin"
+"GO:0006833","water transport",9,24,0.0035,0.000379486228942516,0.0168238894831182,15,"salt_DOWN","Aquaporin"
+"GO:0009932","cell tip growth",4,11,0.0016,0.0200320989583488,0.293218896482203,43,"salt_DOWN","Aquaporin"
+"GO:0048768","root hair cell tip growth",4,27,0.0016,0.296762026616634,0.999999999998843,165,"salt_DOWN","Aquaporin"

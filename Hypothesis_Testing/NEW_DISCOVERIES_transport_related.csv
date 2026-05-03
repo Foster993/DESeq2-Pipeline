@@ -1,0 +1,4 @@
+"discovery_rank","gene","category","pattern","lfc_drought","padj_drought","lfc_salt","padj_salt","combined_lfc_score","concordant","discordant","is_transport_related","has_specific_go","go_annotation","desc"
+1,"AT1G29020","DOWN_in_both","Drought:DOWN | Salt:DOWN",-1.13789073042737,0.00168039009895395,-8.05223838099821,5.15384461363057e-22,9.19012911142558,TRUE,FALSE,TRUE,TRUE,"intracellular calcium ion homeostasis | calcium ion transmembrane transport","no description"
+2,"AT3G54450","UP_in_both","Drought:UP | Salt:UP",1.73187056354693,7.45004799488531e-05,1.75164800776399,0.000616216728172231,3.48351857131092,TRUE,FALSE,TRUE,TRUE,"transmembrane transport","no description"
+3,"AT5G46040","DOWN_in_both","Drought:DOWN | Salt:DOWN",-1.1483714188552,0.000858055412019627,-2.06140188564253,3.28014229378586e-11,3.20977330449773,TRUE,FALSE,TRUE,TRUE,"response to nematode | transmembrane transport","no description"
